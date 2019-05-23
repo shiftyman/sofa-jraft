@@ -16,7 +16,10 @@
  */
 package com.alipay.sofa.jraft.core;
 
-import java.util.concurrent.locks.StampedLock;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -48,8 +51,10 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
 
     private FSMCaller                  waiter;
     private ClosureQueue               closureQueue;
-    private final StampedLock          stampedLock        = new StampedLock();
-    private long                       lastCommittedIndex = 0;
+    private final ReadWriteLock        lock               = new ReentrantReadWriteLock();
+    private final Lock                 readLock           = lock.readLock();
+    private final Lock                 writeLock          = lock.writeLock();
+    private final AtomicLong           lastCommittedIndex = new AtomicLong(0);
     private long                       pendingIndex;
     private final ArrayDequeue<Ballot> pendingMetaQueue   = new ArrayDequeue<>();
 
@@ -64,16 +69,11 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
     }
 
     public long getLastCommittedIndex() {
-        long stamp = stampedLock.tryOptimisticRead();
-        long optimisticVal = this.lastCommittedIndex;
-        if (stampedLock.validate(stamp)) {
-            return optimisticVal;
-        }
-        stamp = stampedLock.readLock();
+        readLock.lock();
         try {
-            return this.lastCommittedIndex;
+            return this.lastCommittedIndex.get();
         } finally {
-            stampedLock.unlockRead(stamp);
+            readLock.unlock();
         }
     }
 
@@ -94,7 +94,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
      */
     public boolean commitAt(long firstLogIndex, long lastLogIndex, PeerId peer) {
         //TODO  use lock-free algorithm here?
-        final long stamp = stampedLock.writeLock();
+        writeLock.lock();
         long lastCommittedIndex = 0;
         try {
             if (pendingIndex == 0) {
@@ -131,9 +131,9 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
                 LOG.debug("Committed log index={}", index);
             }
             pendingIndex = lastCommittedIndex + 1;
-            this.lastCommittedIndex = lastCommittedIndex;
+            this.lastCommittedIndex.set(lastCommittedIndex);// 还没apply到状态机，这里committedIndex已经更新
         } finally {
-            stampedLock.unlockWrite(stamp);
+            writeLock.unlock();
         }
         this.waiter.onCommitted(lastCommittedIndex);
         return true;
@@ -146,13 +146,13 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
      * truncate.
      */
     public void clearPendingTasks() {
-        final long stamp = stampedLock.writeLock();
+        writeLock.lock();
         try {
             this.pendingMetaQueue.clear();
             this.pendingIndex = 0;
             this.closureQueue.clear();
         } finally {
-            stampedLock.unlockWrite(stamp);
+            writeLock.unlock();
         }
     }
 
@@ -166,23 +166,23 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
      * @return returns true if reset success
      */
     public boolean resetPendingIndex(long newPendingIndex) {
-        final long stamp = stampedLock.writeLock();
+        writeLock.lock();
         try {
             if (!(pendingIndex == 0 && pendingMetaQueue.isEmpty())) {
                 LOG.error("resetPendingIndex fail, pendingIndex={}, pendingMetaQueueSize={}", pendingIndex,
                     pendingMetaQueue.size());
                 return false;
             }
-            if (newPendingIndex <= this.lastCommittedIndex) {
+            if (newPendingIndex <= this.lastCommittedIndex.get()) {
                 LOG.error("resetPendingIndex fail, newPendingIndex={}, lastCommittedIndex={}", newPendingIndex,
-                    lastCommittedIndex);
+                    lastCommittedIndex.get());
                 return false;
             }
             this.pendingIndex = newPendingIndex;
             this.closureQueue.resetFirstIndex(newPendingIndex);
             return true;
         } finally {
-            stampedLock.unlockWrite(stamp);
+            writeLock.unlock();
         }
     }
 
@@ -201,7 +201,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
             LOG.error("Fail to init ballot");
             return false;
         }
-        final long stamp = stampedLock.writeLock();
+        writeLock.lock();
         try {
             if (pendingIndex <= 0) {
                 LOG.error("Fail to appendingTask, pendingIndex={}", pendingIndex);
@@ -211,7 +211,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
             this.closureQueue.appendPendingClosure(done);
             return true;
         } finally {
-            stampedLock.unlockWrite(stamp);
+            writeLock.unlock();
         }
     }
 
@@ -223,26 +223,26 @@ public class BallotBox implements Lifecycle<BallotBoxOptions> {
      */
     public boolean setLastCommittedIndex(long lastCommittedIndex) {
         boolean doUnlock = true;
-        final long stamp = stampedLock.writeLock();
+        writeLock.lock();
         try {
             if (pendingIndex != 0 || !pendingMetaQueue.isEmpty()) {
                 Requires.requireTrue(lastCommittedIndex < this.pendingIndex,
-                    "Node changes to leader, pendingIndex=%d, param lastCommittedIndex=%d", pendingIndex,
-                    lastCommittedIndex);
+                    "Node changes to leader, pendingIndex=%d, param lastCommittedIndex=%d",
+                    pendingIndex,lastCommittedIndex);
                 return false;
             }
-            if (lastCommittedIndex < this.lastCommittedIndex) {
+            if (lastCommittedIndex < this.lastCommittedIndex.get()) {
                 return false;
             }
-            if (lastCommittedIndex > this.lastCommittedIndex) {
-                this.lastCommittedIndex = lastCommittedIndex;
-                stampedLock.unlockWrite(stamp);
+            if (lastCommittedIndex > this.lastCommittedIndex.get()) {
+                this.lastCommittedIndex.set(lastCommittedIndex);
+                writeLock.unlock();
                 doUnlock = false;
                 this.waiter.onCommitted(lastCommittedIndex);
             }
         } finally {
             if (doUnlock) {
-                stampedLock.unlockWrite(stamp);
+                writeLock.unlock();
             }
         }
         return true;

@@ -84,6 +84,7 @@ public class RegionLeaderBalanceHandler extends InboundHandlerAdapter<RegionPing
             }
             final List<Endpoint> endpoints = Lists.transform(peers, Peer::getEndpoint);
             final Map<Long, Endpoint> storeIds = metadataStore.unsafeGetStoreIdsByEndpoints(clusterId, endpoints);
+            // 找出较少leader的stores
             // find lazyWorkers
             final List<Pair<Long, Integer>> lazyWorkers = clusterStatsManager.findLazyWorkerStores(storeIds.keySet());
             if (lazyWorkers.isEmpty()) {

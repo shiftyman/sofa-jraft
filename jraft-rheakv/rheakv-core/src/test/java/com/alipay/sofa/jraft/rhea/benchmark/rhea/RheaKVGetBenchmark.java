@@ -47,7 +47,7 @@ import static com.alipay.sofa.jraft.rhea.benchmark.BenchmarkUtil.VALUE_BYTES;
 /**
  * @author jiachun.fjc
  */
-@State(Scope.Benchmark)
+@State(Scope.Benchmark)//所有测试线程共享实例
 public class RheaKVGetBenchmark extends RheaBenchmarkCluster {
     /**
      //

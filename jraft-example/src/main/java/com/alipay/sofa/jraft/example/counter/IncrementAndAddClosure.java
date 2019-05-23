@@ -30,7 +30,7 @@ import com.alipay.sofa.jraft.example.counter.rpc.ValueResponse;
  */
 public class IncrementAndAddClosure implements Closure {
 
-    @SuppressWarnings({ "FieldCanBeLocal", "unused" })
+    @SuppressWarnings("all")
     private CounterServer          counterServer;
     private IncrementAndGetRequest request;
     private ValueResponse          response;

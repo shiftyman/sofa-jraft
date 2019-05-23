@@ -45,9 +45,13 @@ public class RheaKVTestCluster {
 
     public static String          DB_PATH        = "rhea_db";
     public static String          RAFT_DATA_PATH = "rhea_raft";
-    public static Long[]          REGION_IDS     = new Long[] { 1L, 2L };
+    public static Long[]          REGION_IDS     = new Long[] { 1L, 2L, 3L };
 
-    private static final String[] CONF           = { "/conf/rhea_test_cluster_1.yaml", "/conf/rhea_test_cluster_2.yaml" };
+    private static final String[] CONF = {
+            "/conf/rhea_test_cluster_1.yaml",
+            "/conf/rhea_test_cluster_2.yaml",
+            "/conf/rhea_test_cluster_3.yaml"
+    };
 
     private List<RheaKVStore>     stores         = new CopyOnWriteArrayList<>();
 
@@ -91,9 +95,7 @@ public class RheaKVTestCluster {
             }
             try {
                 Thread.sleep(100);
-            } catch (InterruptedException ignored) {
-                // ignored
-            }
+            } catch (InterruptedException ignored) {}
         }
         throw new NotLeaderException("no leader on region: " + regionId);
     }

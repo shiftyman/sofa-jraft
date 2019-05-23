@@ -32,8 +32,7 @@ public class Updaters {
      * @param tClass    the class of the objects holding the field.
      * @param fieldName the name of the field to be updated.
      */
-    public static <U> UnsafeIntegerFieldUpdater<U> newIntegerFieldUpdater(final Class<? super U> tClass,
-                                                                          final String fieldName) {
+    public static <U> UnsafeIntegerFieldUpdater<U> newIntegerFieldUpdater(final Class<? super U> tClass, final String fieldName) {
         try {
             return new UnsafeIntegerFieldUpdater<>(UnsafeUtil.getUnsafe(), tClass, fieldName);
         } catch (final Throwable t) {
@@ -48,8 +47,7 @@ public class Updaters {
      * @param tClass    the class of the objects holding the field.
      * @param fieldName the name of the field to be updated.
      */
-    public static <U> UnsafeLongFieldUpdater<U> newLongFieldUpdater(final Class<? super U> tClass,
-                                                                    final String fieldName) {
+    public static <U> UnsafeLongFieldUpdater<U> newLongFieldUpdater(final Class<? super U> tClass, final String fieldName) {
         try {
             return new UnsafeLongFieldUpdater<>(UnsafeUtil.getUnsafe(), tClass, fieldName);
         } catch (final Throwable t) {
@@ -64,8 +62,7 @@ public class Updaters {
      * @param tClass    the class of the objects holding the field.
      * @param fieldName the name of the field to be updated.
      */
-    public static <U, W> UnsafeReferenceFieldUpdater<U, W> newReferenceFieldUpdater(final Class<? super U> tClass,
-                                                                                    final String fieldName) {
+    public static <U, W> UnsafeReferenceFieldUpdater<U, W> newReferenceFieldUpdater(final Class<? super U> tClass, final String fieldName) {
         try {
             return new UnsafeReferenceFieldUpdater<>(UnsafeUtil.getUnsafe(), tClass, fieldName);
         } catch (final Throwable t) {

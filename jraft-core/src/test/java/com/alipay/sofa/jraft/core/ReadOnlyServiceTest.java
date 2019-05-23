@@ -261,7 +261,8 @@ public class ReadOnlyServiceTest {
         state.setIndex(1);
         states.add(state);
         final ReadIndexStatus readIndexStatus = new ReadIndexStatus(states, null, 1);
-        this.readOnlyServiceImpl.getPendingNotifyStatus().put(1L, Arrays.asList(readIndexStatus));
+        this.readOnlyServiceImpl.getPendingNotifyStatus().put(1L,
+            Arrays.asList(readIndexStatus));
 
         this.readOnlyServiceImpl.onApplied(2);
         latch.await();

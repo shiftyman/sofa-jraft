@@ -3,6 +3,10 @@
 BASE_DIR=$(dirname $0)/..
 CLASSPATH=$(echo $BASE_DIR/lib/*.jar | tr ' ' ':')
 
+if [ -z "$JAVA_HOME" ]; then
+  JAVA_HOME=/opt/taobao/java
+fi
+
 # get java version
 JAVA="$JAVA_HOME/bin/java"
 

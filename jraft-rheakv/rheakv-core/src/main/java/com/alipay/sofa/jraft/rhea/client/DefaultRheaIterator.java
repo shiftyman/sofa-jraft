@@ -41,8 +41,7 @@ public class DefaultRheaIterator implements RheaIterator<KVEntry> {
 
     private byte[]                      cursorKey;
 
-    public DefaultRheaIterator(DefaultRheaKVStore rheaKVStore, byte[] startKey, byte[] endKey, int bufSize,
-                               boolean readOnlySafe) {
+    public DefaultRheaIterator(DefaultRheaKVStore rheaKVStore, byte[] startKey, byte[] endKey, int bufSize, boolean readOnlySafe) {
         this.rheaKVStore = rheaKVStore;
         this.pdClient = rheaKVStore.getPlacementDriverClient();
         this.startKey = BytesUtil.nullToEmpty(startKey);

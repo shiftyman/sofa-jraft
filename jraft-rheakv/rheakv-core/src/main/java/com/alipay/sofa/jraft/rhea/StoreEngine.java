@@ -98,6 +98,11 @@ public class StoreEngine implements Lifecycle<StoreEngineOptions> {
     private long                                       startTime            = System.currentTimeMillis();
     private File                                       dbPath;
     private RpcServer                                  rpcServer;
+    /**
+     * 所有Region共用的状态机，所有RegionEngine的实例都获取StoreEngine的此KVStrore作为状态机
+     *
+     * 那么，snapshot怎么install？？？
+     */
     private BatchRawKVStore<?>                         rawKVStore;
     private HeartbeatSender                            heartbeatSender;
     private StoreEngineOptions                         storeOpts;
@@ -469,6 +474,9 @@ public class StoreEngine implements Lifecycle<StoreEngineOptions> {
         final Region parentRegion = parentEngine.getRegion();
         final byte[] startKey = BytesUtil.nullToEmpty(parentRegion.getStartKey());
         final byte[] endKey = parentRegion.getEndKey();
+
+        // 找到大概的endkey距离startkey中间的key数量，精确到100个以内
+        // 辞职用于：1.是否达到分裂阈值（region已经包含足够多的key）；2.取大约的中间值，作为新region的startkey
         final long approximateKeys = this.rawKVStore.getApproximateKeysInRange(startKey, endKey);
         final long leastKeysOnSplit = this.storeOpts.getLeastKeysOnSplit();
         if (approximateKeys < leastKeysOnSplit) {
@@ -477,7 +485,7 @@ public class StoreEngine implements Lifecycle<StoreEngineOptions> {
             this.splitting.set(false);
             return;
         }
-        final byte[] splitKey = this.rawKVStore.jumpOver(startKey, approximateKeys >> 1);
+        final byte[] splitKey = this.rawKVStore.jumpOver(startKey, approximateKeys >> 1);//取中间值
         if (splitKey == null) {
             closure.setError(Errors.STORAGE_ERROR);
             closure.run(new Status(-1, "Fail to scan split key"));
@@ -488,9 +496,13 @@ public class StoreEngine implements Lifecycle<StoreEngineOptions> {
         final Task task = new Task();
         task.setData(ByteBuffer.wrap(Serializers.getDefault().writeObject(op)));
         task.setDone(new KVClosureAdapter(closure, op));
+        // region split作为raft事件提交到raft group
         parentEngine.getNode().apply(task);
     }
 
+    // region分裂，新建region，以splitkey为startkey，oldRegion的endkey为其endkey
+    // 更新oldregion，以splitkey为endkey，更新regionEpoch
+    // 底层存储是共享rocksdb实例，所以split只需要更改元数据
     public void doSplit(final Long regionId, final Long newRegionId, final byte[] splitKey, final KVStoreClosure closure) {
         try {
             Requires.requireNonNull(regionId, "regionId");
@@ -557,7 +569,7 @@ public class StoreEngine implements Lifecycle<StoreEngineOptions> {
             }
             // start kv store metrics reporter
             this.kvMetricsReporter = Slf4jReporter.forRegistry(KVMetrics.metricRegistry()) //
-                .prefixedWith("store_" + this.storeId) //
+                .prefixedWith("store_" + String.valueOf(this.storeId)) //
                 .withLoggingLevel(Slf4jReporter.LoggingLevel.INFO) //
                 .outputTo(LOG) //
                 .scheduleOn(this.metricsScheduler) //

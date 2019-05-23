@@ -172,7 +172,8 @@ public class DefaultRheaKVRpcService implements RheaKVRpcService {
             return null;
         }
         final String name = "rpc-callback";
-        return ThreadPoolUtil.newThreadPool(name, true, corePoolSize, maximumPoolSize, 120L, new ArrayBlockingQueue<>(
-            queueCapacity), new NamedThreadFactory(name, true), new CallerRunsPolicyWithReport(name));
+        return ThreadPoolUtil.newThreadPool(name, true, corePoolSize, maximumPoolSize, 120L,
+                new ArrayBlockingQueue<>(queueCapacity), new NamedThreadFactory(name, true),
+                new CallerRunsPolicyWithReport(name));
     }
 }

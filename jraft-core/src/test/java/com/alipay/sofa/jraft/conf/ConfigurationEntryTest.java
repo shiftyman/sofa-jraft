@@ -37,10 +37,8 @@ public class ConfigurationEntryTest {
         assertTrue(entry.contains(new PeerId("localhost", 8081)));
         assertTrue(entry.contains(new PeerId("localhost", 8082)));
         assertTrue(entry.contains(new PeerId("localhost", 8083)));
-        assertEquals(
-            entry.listPeers(),
-            new HashSet<>(Arrays.asList(new PeerId("localhost", 8081), new PeerId("localhost", 8082), new PeerId(
-                "localhost", 8083))));
+        assertEquals(entry.listPeers(), new HashSet<>(Arrays.asList(new PeerId("localhost", 8081),
+            new PeerId("localhost", 8082), new PeerId("localhost", 8083))));
 
     }
 

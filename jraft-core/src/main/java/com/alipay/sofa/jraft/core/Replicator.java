@@ -79,21 +79,21 @@ public class Replicator implements ThreadId.OnError {
     private int                              consecutiveErrorTimes  = 0;
     private boolean                          hasSucceeded;
     private long                             timeoutNowIndex;
-    private volatile long                    lastRpcSendTimestamp;
+    private volatile long                    lastRpcSendTimestamp;//最近一次成功把消息发送出去的时间
     private volatile long                    heartbeatCounter       = 0;
     private volatile long                    appendEntriesCounter   = 0;
     private volatile long                    installSnapshotCounter = 0;
-    protected Stat                           statInfo               = new Stat();
+    protected Stat                           statInfo               = new Stat();//状态、发送中的first、lastIndex、快照index等
     private ScheduledFuture<?>               blockTimer;
 
     // Cached the latest RPC in-flight request.
     private Inflight                         rpcInFly;
-    // Heartbeat RPC future
+    // Heartbeat RPC futgure
     private Future<Message>                  heartbeatInFly;
     // Timeout request RPC future
     private Future<Message>                  timeoutNowInFly;
     // In-flight RPC requests, FIFO queue
-    private final ArrayDeque<Inflight>       inflights              = new ArrayDeque<>();
+    private final ArrayDeque<Inflight>       inflights              = new ArrayDeque<>();//在途请求，滑动窗口
 
     private long                             waitId                 = -1L;
     protected ThreadId                       id;
@@ -110,10 +110,12 @@ public class Replicator implements ThreadId.OnError {
     // Request sequence
     private int                              reqSeq                 = 0;
     // Response sequence
-    private int                              requiredNextSeq        = 0;
+    private int                              requiredNextSeq        = 0;//响应处理到的下一个序列号
     // Replicator state reset version
-    private int                              version                = 0;
+    private int                              version                = 0;//版本号，用于每次失败导致的reset后区是否响应已过期
 
+    // pendingResponses用于保存响应消息
+    // 流水线地发送请求，然后接收这一批请求的响应，将响应根据请求序号，放在优先队列里，目的是能够顺序地处理这些响应
     // Pending response queue;
     private final PriorityQueue<RpcResponse> pendingResponses       = new PriorityQueue<>(50);
 
@@ -141,10 +143,10 @@ public class Replicator implements ThreadId.OnError {
      *
      */
     public enum State {
-        Probe, // probe follower state
-        Snapshot, // installing snapshot to follower
-        Replicate, // replicate logs normally
-        Destroyed // destroyed
+        Probe,      // probe follower state
+        Snapshot,   // installing snapshot to follower
+        Replicate,  // replicate logs normally
+        Destroyed   // destroyed
     }
 
     public Replicator(ReplicatorOptions replicatorOptions, RaftOptions raftOptions) {
@@ -190,9 +192,9 @@ public class Replicator implements ThreadId.OnError {
      * 2018-Apr-04 10:38:45 AM
      */
     enum RunningState {
-        IDLE, // idle
-        BLOCKING, // blocking state
-        APPENDING_ENTRIES, // appending log entries
+        IDLE,               // idle
+        BLOCKING,           // blocking state
+        APPENDING_ENTRIES,  // appending log entries
         INSTALLING_SNAPSHOT // installing snapshot
     }
 
@@ -212,8 +214,8 @@ public class Replicator implements ThreadId.OnError {
         @Override
         public String toString() {
             return "<running=" + this.runningState + ", firstLogIndex=" + this.firstLogIndex + ", lastLogIncluded="
-                   + this.lastLogIncluded + ", lastLogIndex=" + this.lastLogIndex + ", lastTermIncluded="
-                   + this.lastTermIncluded + ">";
+                    + this.lastLogIncluded + ", lastLogIndex=" + this.lastLogIndex + ", lastTermIncluded="
+                    + this.lastTermIncluded + ">";
         }
 
     }
@@ -256,7 +258,7 @@ public class Replicator implements ThreadId.OnError {
         @Override
         public String toString() {
             return "Inflight [count=" + count + ", startIndex=" + startIndex + ", size=" + size + ", rpcFuture="
-                   + rpcFuture + ", requestType=" + requestType + ", seq=" + seq + "]";
+                    + rpcFuture + ", requestType=" + requestType + ", seq=" + seq + "]";
         }
 
         boolean isSendingLogEntries() {
@@ -291,7 +293,7 @@ public class Replicator implements ThreadId.OnError {
         @Override
         public String toString() {
             return "RpcResponse [status=" + status + ", request=" + request + ", response=" + response
-                   + ", rpcSendTime=" + rpcSendTime + ", seq=" + seq + ", requestType=" + requestType + "]";
+                    + ", rpcSendTime=" + rpcSendTime + ", seq=" + seq + ", requestType=" + requestType + "]";
         }
 
         /**
@@ -442,15 +444,12 @@ public class Replicator implements ThreadId.OnError {
 
     void installSnapshot() {
         if (this.state == State.Snapshot) {
-            LOG.warn("Replicator {} is installing snapshot, ignore the new request.", this.options.getPeerId());
             id.unlock();
             return;
         }
+        Requires.requireTrue(this.reader == null);
         boolean doUnlock = true;
         try {
-            Requires.requireTrue(this.reader == null,
-                "Replicator %s already has a snapshot reader, current state is %s", this.options.getPeerId(),
-                this.state);
             reader = options.getSnapshotStorage().open();
             if (reader == null) {
                 final NodeImpl node = options.getNode();
@@ -461,6 +460,8 @@ public class Replicator implements ThreadId.OnError {
                 node.onError(error);
                 return;
             }
+
+            // uri是当前节点的地址加上readerId号，此号为每一次installSnapshot生成唯一值
             final String uri = reader.generateURIForCopy();
             if (uri == null) {
                 final NodeImpl node = options.getNode();
@@ -487,8 +488,8 @@ public class Replicator implements ThreadId.OnError {
             rb.setGroupId(options.getGroupId());
             rb.setServerId(options.getServerId().toString());
             rb.setPeerId(options.getPeerId().toString());
-            rb.setMeta(meta);
-            rb.setUri(uri);
+            rb.setMeta(meta);//meta:lastIncludeTerm、lastIncludeIndex之类
+            rb.setUri(uri);//follower从这个uri来拉取
 
             statInfo.runningState = RunningState.INSTALLING_SNAPSHOT;
             statInfo.lastLogIncluded = meta.getLastIncludedIndex();
@@ -498,18 +499,17 @@ public class Replicator implements ThreadId.OnError {
             this.state = State.Snapshot;
             // noinspection NonAtomicOperationOnVolatileField
             this.installSnapshotCounter++;
-            final long monotonicSendTimeMs = Utils.monotonicMs();
+            final long sendTime = Utils.nowMs();
             final int stateVersion = this.version;
             final int seq = getAndIncrementReqSeq();
             final Future<Message> rpcFuture = rpcService.installSnapshot(this.options.getPeerId().getEndpoint(),
                 request, new RpcResponseClosureAdapter<InstallSnapshotResponse>() {
 
-                    @Override
-                    public void run(Status status) {
-                        onRpcReturned(id, RequestType.Snapshot, status, request, getResponse(), seq, stateVersion,
-                            monotonicSendTimeMs);
-                    }
-                });
+                @Override
+                public void run(Status status) {
+                    onRpcReturned(id, RequestType.Snapshot, status, request, getResponse(), seq, stateVersion, sendTime);
+                }
+            });
             addInflight(RequestType.Snapshot, this.nextIndex, 0, 0, seq, rpcFuture);
         } finally {
             if (doUnlock) {
@@ -529,10 +529,10 @@ public class Replicator implements ThreadId.OnError {
         // noinspection ConstantConditions
         do {
             final StringBuilder sb = new StringBuilder("Node "). //
-                append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
-                append(" received InstallSnapshotResponse from ").append(r.options.getPeerId()). //
-                append(" lastIncludedIndex=").append(request.getMeta().getLastIncludedIndex()). //
-                append(" lastIncludedTerm=").append(request.getMeta().getLastIncludedTerm());
+                    append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
+                    append(" received InstallSnapshotResponse from ").append(r.options.getPeerId()). //
+                    append(" lastIncludedIndex=").append(request.getMeta().getLastIncludedIndex()). //
+                    append(" lastIncludedTerm=").append(request.getMeta().getLastIncludedTerm());
             if (!status.isOk()) {
                 sb.append(" error:").append(status);
                 LOG.info(sb.toString());
@@ -556,9 +556,9 @@ public class Replicator implements ThreadId.OnError {
         // We don't retry installing the snapshot explicitly.
         // id is unlock in sendEntries
         if (!success) {
+            r.state = State.Probe;
             //should reset states
             r.resetInflights();
-            r.state = State.Probe;
             r.block(Utils.nowMs(), status.getCode());
             return false;
         }
@@ -572,6 +572,7 @@ public class Replicator implements ThreadId.OnError {
         return true;
     }
 
+    //非心跳的消息是probe消息
     private void sendEmptyEntries(boolean isHeartbeat) {
         this.sendEmptyEntries(isHeartbeat, null);
     }
@@ -589,13 +590,13 @@ public class Replicator implements ThreadId.OnError {
             // id is unlock in installSnapshot
             this.installSnapshot();
             if (isHeartbeat && heartBeatClosure != null) {
-                Utils.runClosureInThread(heartBeatClosure, new Status(RaftError.EAGAIN,
-                    "Fail to send heartbeat to peer %s", this.options.getPeerId()));
+                Utils.runClosureInThread(heartBeatClosure,
+                    new Status(RaftError.EAGAIN, "Fail to send heartbeat to peer %s", this.options.getPeerId()));
             }
             return;
         }
         try {
-            final long monotonicSendTimeMs = Utils.monotonicMs();
+            final long sendTime = Utils.nowMs();
             final AppendEntriesRequest request = rb.build();
 
             if (isHeartbeat) {
@@ -610,7 +611,7 @@ public class Replicator implements ThreadId.OnError {
 
                         @Override
                         public void run(Status status) {
-                            onHeartbeatReturned(id, status, request, getResponse(), monotonicSendTimeMs);
+                            onHeartbeatReturned(id, status, request, getResponse(), sendTime);
                         }
                     };
                 }
@@ -628,18 +629,18 @@ public class Replicator implements ThreadId.OnError {
                 final Future<Message> rpcFuture = this.rpcService.appendEntries(this.options.getPeerId().getEndpoint(),
                     request, -1, new RpcResponseClosureAdapter<AppendEntriesResponse>() {
 
-                        @Override
-                        public void run(Status status) {
-                            onRpcReturned(id, RequestType.AppendEntries, status, request, getResponse(), seq,
-                                stateVersion, monotonicSendTimeMs);
-                        }
+                    @Override
+                    public void run(Status status) {
+                        onRpcReturned(id, RequestType.AppendEntries, status, request, getResponse(), seq, stateVersion,
+                            sendTime);
+                    }
 
-                    });
+                });
 
                 addInflight(RequestType.AppendEntries, this.nextIndex, 0, 0, seq, rpcFuture);
             }
-            LOG.debug("Node {} send HeartbeatRequest to {} term {} lastCommittedIndex {}", options.getNode()
-                .getNodeId(), options.getPeerId(), options.getTerm(), request.getCommittedIndex());
+            LOG.debug("Node {} send HeartbeatRequest to {} term {} lastCommittedIndex {}",
+                options.getNode().getNodeId(), options.getPeerId(), options.getTerm(), request.getCommittedIndex());
         } finally {
             id.unlock();
         }
@@ -669,7 +670,7 @@ public class Replicator implements ThreadId.OnError {
             }
         } else {
             Requires.requireTrue(entry.getType() != EnumOutter.EntryType.ENTRY_TYPE_CONFIGURATION,
-                "Empty peers but is ENTRY_TYPE_CONFIGURATION type at logIndex=%d", logIndex);
+                    "Empty peers but is ENTRY_TYPE_CONFIGURATION type at logIndex=%d", logIndex);
         }
         final int remaining = entry.getData() != null ? entry.getData().remaining() : 0;
         emb.setDataLen(remaining);
@@ -709,8 +710,9 @@ public class Replicator implements ThreadId.OnError {
         r.id.lock();
         LOG.info("Replicator={}@{} is started", r.id, r.options.getPeerId());
         r.catchUpClosure = null;
-        r.lastRpcSendTimestamp = Utils.monotonicMs();
-        r.startHeartbeatTimer(Utils.nowMs());
+        final long now = Utils.nowMs();
+        r.lastRpcSendTimestamp = now;
+        r.startHeartbeatTimer(now);
         //id.unlock in sendEmptyEntries
         r.sendEmptyEntries(false);
         return r.id;
@@ -746,8 +748,8 @@ public class Replicator implements ThreadId.OnError {
 
     @Override
     public String toString() {
-        return "Replicator [state=" + this.state + ", statInfo=" + this.statInfo + ",peerId="
-               + this.options.getPeerId() + "]";
+        return "Replicator [state=" + this.state + ", statInfo=" + this.statInfo + ",peerId=" + this.options.getPeerId()
+        + "]";
     }
 
     static void onBlockTimeoutInNewThread(ThreadId id) {
@@ -881,13 +883,15 @@ public class Replicator implements ThreadId.OnError {
         }
     }
 
+    // 该方法在catch up超时 & 复制响应时（install snapshot or append entries & 复制错误时 调用
+    // 作用在于判断是否已经catch up
     private void notifyOnCaughtUp(int code, boolean beforeDestroy) {
         if (this.catchUpClosure == null) {
             return;
         }
-        if (code != RaftError.ETIMEDOUT.getNumber()) {
+        if (code != RaftError.ETIMEDOUT.getNumber()) {// 判断是否已经catch up
             if (nextIndex - 1 + catchUpClosure.getMaxMargin() < options.getLogManager().getLastLogIndex()) {
-                return;
+                return;// 未catch up
             }
             if (catchUpClosure.isErrorWasSet()) {
                 return;
@@ -896,11 +900,12 @@ public class Replicator implements ThreadId.OnError {
             if (code != 0) {
                 catchUpClosure.getStatus().setError(code, RaftError.describeCode(code));
             }
+            // 这里表示已catch up，清理catch up timer
             if (catchUpClosure.hasTimer()) {
                 if (!beforeDestroy && !this.catchUpClosure.getTimer().cancel(true)) {
                     // There's running timer task, let timer task trigger
                     // on_caught_up to void ABA problem
-                    return;
+                    return;// 清理失败。。？
                 }
             }
         } else {
@@ -911,6 +916,8 @@ public class Replicator implements ThreadId.OnError {
         }
         final CatchUpClosure savedClosure = this.catchUpClosure;
         this.catchUpClosure = null;
+        // 做出进一步处理：如果成功，则nextStage；如果超时，则看是否需要下一轮等待;如果失败，则reset。
+        // 最后需要处理done
         Utils.runClosureInThread(savedClosure, savedClosure.getStatus());
     }
 
@@ -925,17 +932,17 @@ public class Replicator implements ThreadId.OnError {
     void destroy() {
         final ThreadId savedId = this.id;
         LOG.info("Replicator {} is going to quit", savedId);
+        this.state = State.Destroyed;
         this.id = null;
-        if (reader != null) {
-            Utils.closeQuietly(reader);
-            this.reader = null;
-        }
         // Unregister replicator metric set
         if (this.options.getNode().getNodeMetrics().getMetricRegistry() != null) {
             options.getNode().getNodeMetrics().getMetricRegistry().remove(getReplicatorMetricName(this.options));
         }
-        this.state = State.Destroyed;
         savedId.unlockAndDestroy();
+        if (reader != null) {
+            Utils.closeQuietly(reader);
+            this.reader = null;
+        }
     }
 
     static void onHeartbeatReturned(ThreadId id, Status status, AppendEntriesRequest request,
@@ -954,11 +961,11 @@ public class Replicator implements ThreadId.OnError {
             StringBuilder sb = null;
             if (isLogDebugEnabled) {
                 sb = new StringBuilder("Node "). //
-                    append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
-                    append(" received HeartbeatResponse from "). //
-                    append(r.options.getPeerId()). //
-                    append(" prevLogIndex=").append(request.getPrevLogIndex()). //
-                    append(" prevLogTerm=").append(request.getPrevLogTerm());
+                        append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
+                        append(" received HeartbeatResponse from "). //
+                        append(r.options.getPeerId()). //
+                        append(" prevLogIndex=").append(request.getPrevLogIndex()). //
+                        append(" prevLogTerm=").append(request.getPrevLogTerm());
             }
             if (!status.isOk()) {
                 if (isLogDebugEnabled) {
@@ -977,14 +984,14 @@ public class Replicator implements ThreadId.OnError {
             if (response.getTerm() > r.options.getTerm()) {
                 if (isLogDebugEnabled) {
                     sb.append(" fail, greater term ").append(response.getTerm()).append(" expect term ")
-                        .append(r.options.getTerm());
+                    .append(r.options.getTerm());
                     LOG.debug(sb.toString());
                 }
                 final NodeImpl node = r.options.getNode();
                 r.notifyOnCaughtUp(RaftError.EPERM.getNumber(), true);
                 r.destroy();
                 node.increaseTermTo(response.getTerm(), new Status(RaftError.EHIGHERTERMRESPONSE,
-                    "Leader receives higher term heartbeat_response from peer:%s", r.options.getPeerId()));
+                    "Leader receives higher term hearbeat_response from peer:%s", r.options.getPeerId()));
                 return;
             }
             if (isLogDebugEnabled) {
@@ -1000,8 +1007,8 @@ public class Replicator implements ThreadId.OnError {
     }
 
     @SuppressWarnings("ContinueOrBreakFromFinallyBlock")
-    static void onRpcReturned(ThreadId id, RequestType reqType, Status status, Message request, Message response,
-                              int seq, int stateVersion, long rpcSendTime) {
+    static void onRpcReturned(ThreadId id, RequestType reqType, Status status, Message request, Message response, int seq,
+                              int stateVersion, long rpcSendTime) {
         if (id == null) {
             return;
         }
@@ -1011,6 +1018,8 @@ public class Replicator implements ThreadId.OnError {
             return;
         }
 
+        //这里有个版本比对，版本号在每次失败清盘后+1
+        //如果版本号不匹配，说明此次响应是stale的，忽略
         if (stateVersion != r.version) {
             LOG.debug(
                 "Replicator {} ignored old version response {}, current version is {}, request is {}\n, and response is {}\n, status is {}.",
@@ -1019,12 +1028,11 @@ public class Replicator implements ThreadId.OnError {
             return;
         }
 
+        // 保存响应消息
         final PriorityQueue<RpcResponse> holdingQueue = r.pendingResponses;
         holdingQueue.add(new RpcResponse(reqType, seq, status, request, response, rpcSendTime));
 
         if (holdingQueue.size() > r.raftOptions.getMaxReplicatorInflightMsgs()) {
-            LOG.warn("Too many pending responses {} for replicator {}, maxReplicatorInflightMsgs={}",
-                holdingQueue.size(), r.options.getPeerId(), r.raftOptions.getMaxReplicatorInflightMsgs());
             r.resetInflights();
             r.state = State.Probe;
             r.sendEmptyEntries(false);
@@ -1039,10 +1047,12 @@ public class Replicator implements ThreadId.OnError {
             sb = new StringBuilder("Replicator ").append(r).append(" is processing RPC responses,");
         }
         try {
-            int processed = 0;
+            int processed = 0;//本次响应到来，处理了多少个已cache响应
             while (!holdingQueue.isEmpty()) {
                 final RpcResponse queuedPipelinedResponse = holdingQueue.peek();
 
+                //比对序号，由于是流水线地发送请求，响应是乱序到达的，因此需要比对序号，按序处理响应才能保证apply的数据一致
+                //这里如果发现到达的响应非应该处理的响应序号，则暂不处理的，等待下一次响应
                 //sequence mismatch, waiting for next response.
                 if (queuedPipelinedResponse.seq != r.requiredNextSeq) {
                     if (processed > 0) {
@@ -1052,7 +1062,7 @@ public class Replicator implements ThreadId.OnError {
                         break;
                     } else {
                         //Do not processed any responses, UNLOCK id and return.
-                        continueSendEntries = false;
+                        continueSendEntries = false;//1个response都没处理，不能继续发送
                         id.unlock();
                         return;
                     }
@@ -1064,10 +1074,12 @@ public class Replicator implements ThreadId.OnError {
                     // The previous in-flight requests were cleared.
                     if (isLogDebugEnabled) {
                         sb.append("ignore response because request not found:").append(queuedPipelinedResponse)
-                            .append(",\n");
+                        .append(",\n");
                     }
                     continue;
                 }
+                //正常情况下，inflight和response会一一对应，如果不对应，说明中途产生了奇怪的异常
+                //此时，重新reset发送窗口和接收窗口
                 if (inflight.seq != queuedPipelinedResponse.seq) {
                     // reset state
                     LOG.warn(
@@ -1076,7 +1088,7 @@ public class Replicator implements ThreadId.OnError {
                     r.resetInflights();
                     r.state = State.Probe;
                     continueSendEntries = false;
-                    r.block(Utils.nowMs(), RaftError.EREQUEST.getNumber());
+                    r.block(Utils.monotonicMs(), RaftError.EREQUEST.getNumber());
                     return;
                 }
                 try {
@@ -1107,6 +1119,8 @@ public class Replicator implements ThreadId.OnError {
                 sb.append(", after processed, continue to send entries: ").append(continueSendEntries);
                 LOG.debug(sb.toString());
             }
+            //只要此次处理了多于1个reponse，就可以继续发送请求。
+            //此处实际上是一个滑动窗口，窗口前端空余了，就可以移动窗口
             if (continueSendEntries) {
                 // unlock in sendEntries.
                 r.sendEntries();
@@ -1115,6 +1129,10 @@ public class Replicator implements ThreadId.OnError {
     }
 
     /**
+     * 重置在途请求，清空滑动窗口：
+     * inflights.clear()，version++,pendingResponses.clear()..
+     * 在各种灾难现场调用清盘，比如各种返回失败。
+     *
      * Reset in-flight state.
      */
     void resetInflights() {
@@ -1132,6 +1150,7 @@ public class Replicator implements ThreadId.OnError {
     private static boolean onAppendEntriesReturned(ThreadId id, Inflight inflight, Status status,
                                                    AppendEntriesRequest request, AppendEntriesResponse response,
                                                    long rpcSendTime, final long startTimeMs, Replicator r) {
+        //发送和接收响应时的logIndex不匹配，这种异常目测不会出现，如果出现，reset滑动窗口吧！~
         if (inflight.startIndex != request.getPrevLogIndex() + 1) {
             LOG.warn(
                 "Replicator {} received invalid AppendEntriesResponse, in-flight startIndex={}, requset prevLogIndex={}, reset the replicator state and probe again.",
@@ -1144,23 +1163,25 @@ public class Replicator implements ThreadId.OnError {
         }
         //record metrics
         if (request.getEntriesCount() > 0) {
-            r.nodeMetrics.recordLatency("replicate-entries", Utils.monotonicMs() - rpcSendTime);
+            r.nodeMetrics.recordLatency("replicate-entries", Utils.nowMs() - rpcSendTime);
             r.nodeMetrics.recordSize("replicate-entries-count", request.getEntriesCount());
-            r.nodeMetrics.recordSize("replicate-entries-bytes", request.getData() != null ? request.getData().size()
-                : 0);
+            r.nodeMetrics.recordSize("replicate-entries-bytes",
+                request.getData() != null ? request.getData().size() : 0);
         }
 
         final boolean isLogDebugEnabled = LOG.isDebugEnabled();
         StringBuilder sb = null;
         if (isLogDebugEnabled) {
             sb = new StringBuilder("Node "). //
-                append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
-                append(" received AppendEntriesResponse from "). //
-                append(r.options.getPeerId()). //
-                append(" prevLogIndex=").append(request.getPrevLogIndex()). //
-                append(" prevLogTerm=").append(request.getPrevLogTerm()). //
-                append(" count=").append(request.getEntriesCount());
+                    append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
+                    append(" received AppendEntriesResponse from "). //
+                    append(r.options.getPeerId()). //
+                    append(" prevLogIndex=").append(request.getPrevLogIndex()). //
+                    append(" prevLogTerm=").append(request.getPrevLogTerm()). //
+                    append(" count=").append(request.getEntriesCount());
         }
+
+        //如果失败，认为这一批可能都失败，清空滑动窗口，block一段时间后再重发
         if (!status.isOk()) {
             // If the follower crashes, any RPC to the follower fails immediately,
             // so we need to block the follower for a while instead of looping until
@@ -1170,22 +1191,23 @@ public class Replicator implements ThreadId.OnError {
                 sb.append(" fail, sleep.");
                 LOG.debug(sb.toString());
             }
+            r.state = State.Probe;
             if (++r.consecutiveErrorTimes % 10 == 0) {
                 LOG.warn("Fail to issue RPC to {}, consecutiveErrorTimes={}, error={}", r.options.getPeerId(),
                     r.consecutiveErrorTimes, status);
             }
             r.resetInflights();
-            r.state = State.Probe;
             //unlock in in block
             r.block(startTimeMs, status.getCode());
             return false;
         }
         r.consecutiveErrorTimes = 0;
         if (!response.getSuccess()) {
+            //响应的term更大，退休
             if (response.getTerm() > r.options.getTerm()) {
                 if (isLogDebugEnabled) {
                     sb.append(" fail, greater term ").append(response.getTerm()).append(" expect term ")
-                        .append(r.options.getTerm());
+                    .append(r.options.getTerm());
                     LOG.debug(sb.toString());
                 }
                 final NodeImpl node = r.options.getNode();
@@ -1197,7 +1219,7 @@ public class Replicator implements ThreadId.OnError {
             }
             if (isLogDebugEnabled) {
                 sb.append(" fail, find nextIndex remote lastLogIndex ").append(response.getLastLogIndex())
-                    .append(" local nextIndex ").append(r.nextIndex);
+                .append(" local nextIndex ").append(r.nextIndex);
                 LOG.debug(sb.toString());
             }
             if (rpcSendTime > r.lastRpcSendTimestamp) {
@@ -1206,11 +1228,14 @@ public class Replicator implements ThreadId.OnError {
             //Fail, reset the state to try again from nextIndex.
             r.resetInflights();
             // prev_log_index and prev_log_term doesn't match
+
+            // 响应者告知，其log并未跟上leader的步伐，需要回退nextIndex再重发
             if (response.getLastLogIndex() + 1 < r.nextIndex) {
                 LOG.debug("LastLogIndex at peer={} is {}", r.options.getPeerId(), response.getLastLogIndex());
                 // The peer contains less logs than leader
                 r.nextIndex = response.getLastLogIndex() + 1;
             } else {
+                //到了这里，说明logIndex是匹配或者超前的，此时，follower需要截断，从何截断，需要一步步减少nextIndex探测
                 // The peer contains logs from old term which should be truncated,
                 // decrease _last_log_at_peer by one to test the right index to keep
                 if (r.nextIndex > 1) {
@@ -1242,12 +1267,14 @@ public class Replicator implements ThreadId.OnError {
         }
         final int entriesSize = request.getEntriesCount();
         if (entriesSize > 0) {
+            //尝试commit，ballotBox会统计大多数赞成票
             r.options.getBallotBox().commitAt(r.nextIndex, r.nextIndex + entriesSize - 1, r.options.getPeerId());
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Replicated logs in [{}, {}] to peer {}", r.nextIndex, r.nextIndex + entriesSize - 1,
                     r.options.getPeerId());
             }
         } else {
+            //每次失败，都会发一个空消息做probe，当响应成功，将State转成Replicate
             //The request is probe request, change the state into Replicate.
             r.state = State.Replicate;
         }
@@ -1255,6 +1282,7 @@ public class Replicator implements ThreadId.OnError {
         r.hasSucceeded = true;
         r.notifyOnCaughtUp(0, false);
         // dummy_id is unlock in _send_entries
+        // timeoutNowIndex表示是否是leaderTransfer的目标，如果目标追上了，则通过sendTimeoutNow使其立即发起选举
         if (r.timeoutNowIndex > 0 && r.timeoutNowIndex < r.nextIndex) {
             r.sendTimeoutNow(false, false);
         }
@@ -1348,16 +1376,19 @@ public class Replicator implements ThreadId.OnError {
         final ByteBufferCollector dataBuffer = ByteBufferCollector.allocate();
         for (int i = 0; i < maxEntriesSize; i++) {
             final RaftOutter.EntryMeta.Builder emb = RaftOutter.EntryMeta.newBuilder();
+            //获取log,内存中获取不到将从disk中获取
             if (!this.prepareEntry(nextSendingIndex, i, emb, dataBuffer)) {
                 break;
             }
             rb.addEntries(emb.build());
         }
         if (rb.getEntriesCount() == 0) {
+            //raft log已经不包含即将要发送给此follower的index，进行“快照安装”
             if (nextSendingIndex < options.getLogManager().getFirstLogIndex()) {
                 this.installSnapshot();
                 return false;
             }
+            //没有新的log，异步等待，当有新的log到来，会继续send出去
             // _id is unlock in _wait_more
             waitMoreEntries(nextSendingIndex);
             return false;
@@ -1375,23 +1406,27 @@ public class Replicator implements ThreadId.OnError {
                 options.getNode().getNodeId(), options.getPeerId(), options.getTerm(), request.getCommittedIndex(),
                 request.getPrevLogIndex(), request.getPrevLogTerm(), nextSendingIndex, request.getEntriesCount());
         }
+
+        //记录当前Replicator的状态信息
         statInfo.runningState = RunningState.APPENDING_ENTRIES;
         statInfo.firstLogIndex = rb.getPrevLogIndex() + 1;
         statInfo.lastLogIndex = rb.getPrevLogIndex() + rb.getEntriesCount();
 
         final int v = this.version;
-        final long monotonicSendTimeMs = Utils.monotonicMs();
+        final long sendTimeMs = Utils.nowMs();
         final int seq = getAndIncrementReqSeq();
-        final Future<Message> rpcFuture = this.rpcService.appendEntries(this.options.getPeerId().getEndpoint(),
-            request, -1, new RpcResponseClosureAdapter<AppendEntriesResponse>() {
+        final Future<Message> rpcFuture = this.rpcService.appendEntries(this.options.getPeerId().getEndpoint(), request,
+            -1, new RpcResponseClosureAdapter<AppendEntriesResponse>() {
 
-                @Override
-                public void run(Status status) {
-                    onRpcReturned(id, RequestType.AppendEntries, status, request, getResponse(), seq, v,
-                        monotonicSendTimeMs);
-                }
+            @Override
+            public void run(Status status) {
+                //处理response
+                onRpcReturned(id, RequestType.AppendEntries, status, request, getResponse(), seq, v, sendTimeMs);
+            }
 
-            });
+        });
+
+        //保存在途请求，一个请求包含若干条log
         addInflight(RequestType.AppendEntries, nextSendingIndex, request.getEntriesCount(), request.getData().size(),
             seq, rpcFuture);
         return true;
@@ -1422,6 +1457,7 @@ public class Replicator implements ThreadId.OnError {
         this.sendTimeoutNow(unlockId, stopAfterFinish, -1);
     }
 
+
     private void sendTimeoutNow(boolean unlockId, boolean stopAfterFinish, int timeoutMs) {
         final TimeoutNowRequest.Builder rb = TimeoutNowRequest.newBuilder();
         rb.setTerm(options.getTerm());
@@ -1450,19 +1486,19 @@ public class Replicator implements ThreadId.OnError {
         return this.rpcService.timeoutNow(options.getPeerId().getEndpoint(), request, timeoutMs,
             new RpcResponseClosureAdapter<TimeoutNowResponse>() {
 
-                @Override
-                public void run(Status status) {
-                    if (id != null) {
-                        onTimeoutNowReturned(id, status, request, getResponse(), stopAfterFinish);
-                    }
+            @Override
+            public void run(Status status) {
+                if (id != null) {
+                    onTimeoutNowReturned(id, status, request, getResponse(), stopAfterFinish);
                 }
+            }
 
-            });
+        });
     }
 
     @SuppressWarnings("unused")
-    static void onTimeoutNowReturned(ThreadId id, Status status, TimeoutNowRequest request,
-                                     TimeoutNowResponse response, final boolean stopAfterFinish) {
+    static void onTimeoutNowReturned(ThreadId id, Status status, TimeoutNowRequest request, TimeoutNowResponse response,
+                                     final boolean stopAfterFinish) {
         final Replicator r = (Replicator) id.lock();
         if (r == null) {
             return;
@@ -1472,9 +1508,9 @@ public class Replicator implements ThreadId.OnError {
         StringBuilder sb = null;
         if (isLogDebugEnabled) {
             sb = new StringBuilder("Node "). //
-                append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
-                append(" received TimeoutNowResponse from "). //
-                append(r.options.getPeerId());
+                    append(r.options.getGroupId()).append(":").append(r.options.getServerId()). //
+                    append(" received TimeoutNowResponse from "). //
+                    append(r.options.getPeerId());
         }
         if (!status.isOk()) {
             if (isLogDebugEnabled) {
@@ -1543,8 +1579,11 @@ public class Replicator implements ThreadId.OnError {
             this.sendTimeoutNow(true, false);
             return true;
         }
-        // Register log_index so that _on_rpc_return trigger
+        // Register log_index so that _on_rpc_returne trigger
         // _send_timeout_now if _next_index reaches log_index
+        // 如果目标对象没追上来，那么先记录下index
+        // 然后当前主会在一个选举周期内，让出主，等待目标追上其log，然后发送SendTimeoutNow
+        // 如果一个周期内，目标仍然没有发起选举，则停止transfer，并且自身恢复leader
         this.timeoutNowIndex = logIndex;
         id.unlock();
         return true;

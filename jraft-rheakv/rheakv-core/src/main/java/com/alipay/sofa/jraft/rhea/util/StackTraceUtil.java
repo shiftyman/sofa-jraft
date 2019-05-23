@@ -25,21 +25,24 @@ import java.io.PrintStream;
  */
 public final class StackTraceUtil {
 
-    private static final String NULL_STRING = "null";
-
     public static String stackTrace(final Throwable t) {
         if (t == null) {
-            return NULL_STRING;
+            return "null";
         }
 
-        try (final ByteArrayOutputStream out = new ByteArrayOutputStream(); final PrintStream ps = new PrintStream(out)) {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try {
+            final PrintStream ps = new PrintStream(out);
             t.printStackTrace(ps);
             ps.flush();
             return new String(out.toByteArray());
-        } catch (final IOException ignored) {
-            // ignored
+        } finally {
+            try {
+                out.close();
+            } catch (final IOException ignored) {
+                // ignored
+            }
         }
-        return NULL_STRING;
     }
 
     private StackTraceUtil() {

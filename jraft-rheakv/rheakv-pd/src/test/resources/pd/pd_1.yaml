@@ -1,10 +1,11 @@
 ##PlacementDriverServerOptions
 ---
+#这里的配置时PD里面内嵌的RheaKV，用于存储元数据的
 rheaKVStoreOptions:
   clusterName: pd_test
 
   placementDriverOptions:
-    fake: true
+    fake: true  #单region，不需要PD
 
   storeEngineOptions:
     rocksDBOptions:

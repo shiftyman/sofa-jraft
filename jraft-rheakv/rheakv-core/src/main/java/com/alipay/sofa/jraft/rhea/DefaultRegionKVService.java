@@ -587,7 +587,7 @@ public class DefaultRegionKVService implements RegionKVService {
         return target;
     }
 
-    @SuppressWarnings("SameParameterValue")
+    @SuppressWarnings("all")
     private static int requirePositive(final int value, final String message) {
         if (value <= 0) {
             throw new InvalidParameterException(message);
@@ -595,7 +595,7 @@ public class DefaultRegionKVService implements RegionKVService {
         return value;
     }
 
-    @SuppressWarnings("SameParameterValue")
+    @SuppressWarnings("all")
     private static long requirePositive(final long value, final String message) {
         if (value <= 0) {
             throw new InvalidParameterException(message);

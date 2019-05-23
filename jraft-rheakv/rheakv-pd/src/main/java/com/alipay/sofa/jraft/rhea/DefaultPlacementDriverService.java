@@ -79,7 +79,7 @@ public class DefaultPlacementDriverService implements PlacementDriverService, Le
 
     private MetadataStore       metadataStore;
     private HandlerInvoker      pipelineInvoker;
-    private Pipeline            pipeline;
+    private Pipeline            pipeline; //用于两类心跳消息的处理流水线，用以还在？
     private volatile boolean    isLeader;
 
     private boolean             started;
@@ -101,10 +101,12 @@ public class DefaultPlacementDriverService implements PlacementDriverService, Le
         if (corePoolSize > 0 && maximumPoolSize > 0) {
             final String name = "pipeline-executor";
             final ThreadPoolExecutor threadPool = ThreadPoolUtil.newThreadPool(name, false, corePoolSize,
-                maximumPoolSize, 120L, new ArrayBlockingQueue<>(1024), new NamedThreadFactory(name, true),
-                new CallerRunsPolicyWithReport(name));
+                    maximumPoolSize, 120L, new ArrayBlockingQueue<>(1024),
+                    new NamedThreadFactory(name, true), new CallerRunsPolicyWithReport(name));
             this.pipelineInvoker = new DefaultHandlerInvoker(threadPool);
         }
+        // PD对KV的管理行为主要在两类心跳的处理上，看RegionLeaderBalanceHandler，SplittingJudgeByApproximateKeysHandler
+        // 接受到心跳的时候，进行数据统计和决策，通过响应消息下发调度指令
         this.pipeline = new DefaultPipeline() //
             .addLast(this.pipelineInvoker, "logHandler", new LogHandler()) //
             .addLast("storeStatsValidator", new StoreStatsValidator()) //

@@ -93,6 +93,8 @@ public abstract class RepeatedTimer {
                 invokeDestroyed = destroyed;
             } else {
                 this.timerTask = null;
+
+                //run之后如果定时器未停止，继续下一次调度
                 this.schedule();
             }
         } finally {

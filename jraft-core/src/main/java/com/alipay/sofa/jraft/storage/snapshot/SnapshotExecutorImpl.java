@@ -263,7 +263,7 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
         this.loadingSnapshot = true;
         this.runningJobs.incrementAndGet();
         final FirstSnapshotLoadDone done = new FirstSnapshotLoadDone(reader);
-        Requires.requireTrue(this.fsmCaller.onSnapshotLoad(done));
+        Requires.requireTrue(this.fsmCaller.onSnapshotLoad(done));// 这里会load snapshot去覆盖DB的数据
         try {
             done.waitForRun();
         } catch (final InterruptedException e) {
@@ -317,6 +317,7 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
                 return;
             }
 
+            // 从这里大概知道，snapshot是以appliedIndex而不是committedIndex为基准的
             if (fsmCaller.getLastAppliedIndex() == this.lastSnapshotIndex) {
                 // There might be false positive as the getLastAppliedIndex() is being
                 // updated. But it's fine since we will do next snapshot saving in a
@@ -335,7 +336,7 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
             }
             this.savingSnapshot = true;
             final SaveSnapshotDone saveSnapshotDone = new SaveSnapshotDone(writer, done, null);
-            if (!this.fsmCaller.onSnapshotSave(saveSnapshotDone)) {
+            if (!this.fsmCaller.onSnapshotSave(saveSnapshotDone)) {// 这里是重点
                 Utils.runClosureInThread(done, new Status(RaftError.EHOSTDOWN, "The raft node is down."));
                 return;
             }
@@ -474,6 +475,7 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
         }
         Requires.requireNonNull(this.curCopier, "curCopier");
         try {
+            // block. 等待任务执行完毕
             this.curCopier.join();
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -481,6 +483,7 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
             return;
         }
 
+        // load下载到的snapshot，重置状态机，并在done时发送response给leader
         loadDownloadingSnapshot(ds, meta);
     }
 
@@ -554,6 +557,8 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
                 ds.done.sendResponse(ds.responseBuilder.build());
                 return false;
             }
+
+            // 比较本地snapshot的Index，判断是否请求的snapshot足够新
             if (ds.request.getMeta().getLastIncludedIndex() <= this.lastSnapshotIndex) {
                 LOG.warn(
                     "Register DownloadingSnapshot failed: snapshot is not newer, request lastIncludedIndex={}, lastSnapshotIndex={}.",
@@ -562,10 +567,14 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
                 ds.done.sendResponse(ds.responseBuilder.build());
                 return false;
             }
+
+            // 没有正在执行的快照安装任务，则新建一个
             final DownloadingSnapshot m = this.downloadingSnapshot.get();
             if (m == null) {
                 this.downloadingSnapshot.set(ds);
                 Requires.requireTrue(this.curCopier == null, "Current copier is not null");
+
+                // 开始copy文件到本地，异步执行，单线程一个个顺序拉取
                 this.curCopier = this.snapshotStorage.startToCopyFrom(ds.request.getUri(), newCopierOpts());
                 if (this.curCopier == null) {
                     this.downloadingSnapshot.set(null);
@@ -578,10 +587,12 @@ public class SnapshotExecutorImpl implements SnapshotExecutor {
                 return true;
             }
 
+            // 存在正在执行的任务
+            // 当已有任务更新，则拒绝此任务；任务相等，则复用
+            // 当此请求更新，则cancel旧任务
             // A previous snapshot is under installing, check if this is the same
             // snapshot and resume it, otherwise drop previous snapshot as this one is
             // newer
-
             if (m.request.getMeta().getLastIncludedIndex() == ds.request.getMeta().getLastIncludedIndex()) {
                 // m is a retry
                 // Copy |*ds| to |*m| so that the former session would respond

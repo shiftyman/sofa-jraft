@@ -143,6 +143,8 @@ public class LocalSnapshotCopier extends SnapshotCopier {
                     setError(RaftError.ECANCELED, "ECANCELED");
                     return;
                 }
+
+                //发起RPC getFile请求
                 session = copier.startCopyToFile(fileName, filePath, null);
                 if (session == null) {
                     LOG.error("Fail to copy {}", fileName);
@@ -154,7 +156,7 @@ public class LocalSnapshotCopier extends SnapshotCopier {
             } finally {
                 lock.unlock();
             }
-            session.join(); // join out of lock
+            session.join(); // join out of lock, 等待完成
             lock.lock();
             try {
                 this.curSession = null;
@@ -242,6 +244,7 @@ public class LocalSnapshotCopier extends SnapshotCopier {
                 continue;
             }
 
+            // 该文件是否已经存在，且checksum一致，如果是，过滤掉
             LocalFileMeta localMeta = (LocalFileMeta) writer.getFileMeta(fileName);
             if (localMeta != null) {
                 if (localMeta.hasChecksum() && localMeta.getChecksum().equals(remoteMeta.getChecksum())) {
@@ -271,7 +274,10 @@ public class LocalSnapshotCopier extends SnapshotCopier {
                 final String destPath = writer.getPath() + File.separator + fileName;
                 FileUtils.deleteQuietly(new File(destPath));
                 try {
-                    Files.createLink(Paths.get(destPath), Paths.get(sourcePath));
+                    if (Files.createLink(Paths.get(destPath), Paths.get(sourcePath)) == null) {
+                        LOG.error("Fail to link {} to {}", sourcePath, destPath);
+                        continue;
+                    }
                 } catch (final IOException e) {
                     LOG.error("Fail to link {} to {}", sourcePath, destPath, e);
                     continue;

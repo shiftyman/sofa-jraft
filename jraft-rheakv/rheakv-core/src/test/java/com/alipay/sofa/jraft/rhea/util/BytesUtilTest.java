@@ -17,14 +17,12 @@
 package com.alipay.sofa.jraft.rhea.util;
 
 import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
 
 import org.junit.Test;
 
 import com.alipay.sofa.jraft.util.BytesUtil;
-import com.alipay.sofa.jraft.util.Utils;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -43,7 +41,7 @@ public class BytesUtilTest {
         final List<Pair<String, byte[]>> list2 = Lists.newArrayList();
         for (final String s : strings) {
             list1.add(Pair.of(s, BytesUtil.writeUtf8(s)));
-            list2.add(Pair.of(s, s.getBytes(StandardCharsets.UTF_8)));
+            list2.add(Pair.of(s, s.getBytes("utf-8")));
         }
         for (int i = 0; i < strings.length; i++) {
             final Pair<String, byte[]> p1 = list1.get(i);
@@ -61,7 +59,7 @@ public class BytesUtilTest {
     public void toUtf8BytesTest() {
         for (int i = 0; i < 100000; i++) {
             String in = UUID.randomUUID().toString();
-            assertArrayEquals(Utils.getBytes(in), BytesUtil.writeUtf8(in));
+            assertArrayEquals(in.getBytes(Constants.UTF8), BytesUtil.writeUtf8(in));
         }
     }
 
@@ -69,8 +67,8 @@ public class BytesUtilTest {
     public void toUtf8StringTest() {
         for (int i = 0; i < 100000; i++) {
             String str = UUID.randomUUID().toString();
-            byte[] in = Utils.getBytes(str);
-            assertEquals(new String(in, StandardCharsets.UTF_8), BytesUtil.readUtf8(in));
+            byte[] in = str.getBytes(Constants.UTF8);
+            assertEquals(new String(in, Constants.UTF8), BytesUtil.readUtf8(in));
         }
     }
 }

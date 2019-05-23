@@ -64,7 +64,8 @@ public class ProtoBufFile {
         }
 
         byte[] lenBytes = new byte[4];
-        try (FileInputStream fin = new FileInputStream(file); BufferedInputStream input = new BufferedInputStream(fin)) {
+        try (FileInputStream fin = new FileInputStream(file);
+                BufferedInputStream input = new BufferedInputStream(fin)) {
             readBytes(lenBytes, input);
             int len = Bits.getInt(lenBytes, 0);
             if (len <= 0) {

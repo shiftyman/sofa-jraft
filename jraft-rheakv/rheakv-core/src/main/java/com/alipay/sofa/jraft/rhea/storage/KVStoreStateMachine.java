@@ -88,6 +88,10 @@ public class KVStoreStateMachine extends StateMachineAdapter {
         while (it.hasNext()) {
             KVOperation kvOp;
             final KVClosureAdapter done = (KVClosureAdapter) it.done();
+
+            // 通常 leader 获取到的 done closure，可以扩展包装一个 closure 类 包含了没有序列化的用户请求
+            // 那么在逻辑处理部分可以直接从 closure 获取到用户请求，无需通过 data 反序列化得到，减少了 leader 的 CPU 开销
+            // 见Jraft用户指南2.1的优化技巧
             if (done != null) {
                 kvOp = done.getOperation();
             } else {
@@ -127,8 +131,9 @@ public class KVStoreStateMachine extends StateMachineAdapter {
             }
 
             // metrics: op qps
-            final Meter opApplyMeter = KVMetrics.meter(STATE_MACHINE_APPLY_QPS, String.valueOf(this.regionId),
-                KVOperation.opName(opByte));
+            final Meter opApplyMeter = KVMetrics.meter(STATE_MACHINE_APPLY_QPS,
+                    String.valueOf(this.regionId),
+                    KVOperation.opName(opByte));
             final int size = kvStates.size();
             opApplyMeter.mark(size);
             this.batchWriteHistogram.update(size);
@@ -207,6 +212,9 @@ public class KVStoreStateMachine extends StateMachineAdapter {
     public void onSnapshotSave(final SnapshotWriter writer, final Closure done) {
         final String snapshotPath = writer.getPath() + File.separator + SNAPSHOT_DIR;
         try {
+            // 前面确定了metaData（index、term、config），这里做快照，如何保证操作原子性？
+            // 因为这是走apply流程，apply流程是单线程顺序执行，过程中不会有对stateMaphine的写入
+            // 这里onSnapshotSave不能再独立线程做，不然原子性无法保证N
             final LocalFileMeta meta = this.rawKVStore.onSnapshotSave(snapshotPath);
             this.storeEngine.getSnapshotExecutor().execute(() -> doCompressSnapshot(writer, meta, done));
         } catch (final Throwable t) {
@@ -240,8 +248,8 @@ public class KVStoreStateMachine extends StateMachineAdapter {
     private void doCompressSnapshot(final SnapshotWriter writer, final LocalFileMeta meta, final Closure done) {
         final String backupPath = writer.getPath() + File.separator + SNAPSHOT_DIR;
         try {
-            try (final ZipOutputStream out = new ZipOutputStream(new FileOutputStream(writer.getPath() + File.separator
-                                                                                      + SNAPSHOT_ARCHIVE))) {
+            try (final ZipOutputStream out = new ZipOutputStream(
+                    new FileOutputStream(writer.getPath() + File.separator + SNAPSHOT_ARCHIVE))) {
                 ZipUtil.compressDirectoryToZipFile(writer.getPath(), SNAPSHOT_DIR, out);
             }
             if (writer.addFile(SNAPSHOT_ARCHIVE, meta)) {
@@ -251,7 +259,8 @@ public class KVStoreStateMachine extends StateMachineAdapter {
             }
         } catch (final Throwable t) {
             LOG.error("Fail to save snapshot at {}, {}.", backupPath, StackTraceUtil.stackTrace(t));
-            done.run(new Status(RaftError.EIO, "Fail to save snapshot at %s, error is %s", backupPath, t.getMessage()));
+            done.run(new Status(RaftError.EIO, "Fail to save snapshot at %s, error is %s", backupPath,
+                    t.getMessage()));
         }
     }
 

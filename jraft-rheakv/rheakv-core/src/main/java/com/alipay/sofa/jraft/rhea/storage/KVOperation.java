@@ -285,6 +285,7 @@ public class KVOperation implements Serializable {
         this.attach = acquirerPair;
     }
 
+    @SuppressWarnings("unchecked")
     public DistributedLock.Acquirer getAcquirer() {
         return DistributedLock.Acquirer.class.cast(this.attach);
     }

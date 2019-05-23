@@ -71,7 +71,7 @@ public class UniqueIdUtil {
         }
         if (pid > 65535) {
             String strPid = Integer.toString(pid);
-            strPid = strPid.substring(strPid.length() - 4);
+            strPid = strPid.substring(strPid.length() - 4, strPid.length());
             pid = Integer.parseInt(strPid);
         }
         final StringBuilder buf = new StringBuilder(Integer.toHexString(pid));
@@ -133,7 +133,6 @@ public class UniqueIdUtil {
         return buf.toString();
     }
 
-    @SuppressWarnings("SameParameterValue")
     private static String getId(final String ip16, final long timestamp, final long nextId) {
         return StringBuilderHelper.get() //
             .append(ip16) //

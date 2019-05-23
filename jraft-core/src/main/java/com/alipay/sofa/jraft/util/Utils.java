@@ -18,9 +18,9 @@ package com.alipay.sofa.jraft.util;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Future;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -53,26 +53,21 @@ public class Utils {
     /**
      * Default jraft closure executor pool minimum size, CPUs by default.
      */
-    public static final int           MIN_CLOSURE_EXECUTOR_POOL_SIZE = Integer.parseInt(System.getProperty(
-                                                                         "jraft.closure.threadpool.size.min",
-                                                                         String.valueOf(cpus())));
+    public static final int           MIN_CLOSURE_EXECUTOR_POOL_SIZE = Integer
+            .parseInt(System.getProperty("jraft.closure.threadpool.size.min", String.valueOf(cpus())));
 
     /**
      * Default jraft closure executor pool maximum size, 5*CPUs by default.
      */
-    public static final int           MAX_CLOSURE_EXECUTOR_POOL_SIZE = Integer.parseInt(System.getProperty(
-                                                                         "jraft.closure.threadpool.size.max",
-                                                                         String.valueOf(cpus() * 100)));
+    public static final int           MAX_CLOSURE_EXECUTOR_POOL_SIZE = Integer
+            .parseInt(System.getProperty("jraft.closure.threadpool.size.max", String.valueOf(cpus() * 100)));
 
     /**
      * Global thread pool to run closure.
      */
     private static ThreadPoolExecutor CLOSURE_EXECUTOR               = ThreadPoolUtil.newThreadPool("CLOSURE_EXECUTOR",
-                                                                         true, MIN_CLOSURE_EXECUTOR_POOL_SIZE,
-                                                                         MAX_CLOSURE_EXECUTOR_POOL_SIZE, 60L,
-                                                                         new SynchronousQueue<>(),
-                                                                         new NamedThreadFactory(
-                                                                             "JRaft-Closure-Executor-", true));
+            true, MIN_CLOSURE_EXECUTOR_POOL_SIZE, MAX_CLOSURE_EXECUTOR_POOL_SIZE, 60L, new SynchronousQueue<>(),
+            new NamedThreadFactory("JRaft-Closure-Executor-", true));
 
     private static final Pattern      GROUP_ID_PATTER                = Pattern.compile("^[a-zA-Z][a-zA-Z0-9\\-_]*$");
 
@@ -250,7 +245,11 @@ public class Utils {
      * Get string bytes in UTF-8 charset.
      */
     public static byte[] getBytes(String s) {
-        return s.getBytes(StandardCharsets.UTF_8);
+        try {
+            return s.getBytes("UTF-8");
+        } catch (final UnsupportedEncodingException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**

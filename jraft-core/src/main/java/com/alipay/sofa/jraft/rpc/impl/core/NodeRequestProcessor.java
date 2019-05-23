@@ -53,7 +53,7 @@ public abstract class NodeRequestProcessor<T extends Message> extends RpcRequest
         PeerId peer = new PeerId();
         String peerIdStr = getPeerId(request);
         if (peer.parse(peerIdStr)) {
-            Node node = NodeManager.getInstance().get(getGroupId(request), peer);
+            Node node = NodeManager.getInstance().get(getGroupId(request), peer);// 根据peerId&groupId找到Node进行请求分发
             if (node != null) {
                 return processRequest0((RaftServerService) node, request, done);
             } else {
